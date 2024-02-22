@@ -278,9 +278,9 @@ class AlarmoBaseEntity(AlarmControlPanelEntity, RestoreEntity):
             )
         )
         self._ready_to_arm_modes = value
-        async_dispatcher_send(
-            self.hass, "alarmo_state_updated", self.area_id, None, None
-        )
+        # async_dispatcher_send(
+        #     self.hass, "alarmo_state_updated", self.area_id, None, None
+        # )
         self.async_write_ha_state()
 
     @property
@@ -707,7 +707,7 @@ class AlarmoAreaEntity(AlarmoBaseEntity):
         self._state = State(
             entity_id=self.entity_id,
             state=state,
-            context=context,
+            context=Context(parent_id=context.id if context else None),
         )
 
         _LOGGER.debug(
@@ -955,7 +955,7 @@ class AlarmoAreaEntity(AlarmoBaseEntity):
         else:  # to pending state
             self.delay = entry_delay
 
-            await self.async_update_state(STATE_ALARM_PENDING)
+            await self.async_update_state(STATE_ALARM_PENDING, context=context)
 
             @callback
             async def async_entry_timer_finished(now):
