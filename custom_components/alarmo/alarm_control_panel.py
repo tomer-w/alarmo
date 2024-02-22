@@ -185,7 +185,7 @@ class AlarmoBaseEntity(AlarmControlPanelEntity, RestoreEntity):
     @property
     def state(self):
         """Return the state of the device."""
-        return self._state
+        return self._state.state
 
     @property
     def supported_features(self) -> int:
@@ -609,14 +609,19 @@ class AlarmoBaseEntity(AlarmControlPanelEntity, RestoreEntity):
         # restore previous state
         if self.last_state:
             # restore attributes
-            if "arm_mode" in last_state.attributes:
-                self._arm_mode = last_state.attributes["arm_mode"]
-            if "changed_by" in last_state.attributes:
-                self._changed_by = last_state.attributes["changed_by"]
-            if "open_sensors" in last_state.attributes:
-                self.open_sensors = last_state.attributes["open_sensors"]
-            if "bypassed_sensors" in last_state.attributes:
-                self._bypassed_sensors = last_state.attributes["bypassed_sensors"]
+            if "arm_mode" in self.last_state.attributes:
+                self._arm_mode = self.last_state.attributes["arm_mode"]
+            if "changed_by" in self.last_state.attributes:
+                self._changed_by = self.last_state.attributes["changed_by"]
+            if "open_sensors" in self.last_state.attributes:
+                self.open_sensors = self.last_state.attributes["open_sensors"]
+            if "bypassed_sensors" in self.last_state.attributes:
+                self._bypassed_sensors = self.last_state.attributes["bypassed_sensors"]
+        else:
+            self.last_state = State(
+                entity_id=self.entity_id,
+                state=STATE_ALARM_DISARMED,
+            )
 
     async def async_will_remove_from_hass(self):
         await super().async_will_remove_from_hass()
@@ -695,7 +700,7 @@ class AlarmoAreaEntity(AlarmoBaseEntity):
     async def async_update_state(self, state: str = None, context: Context = None):
         """update the state or refresh state attributes"""
 
-        if state == self._state.state:
+        if self._state and state == self._state.state:
             return
 
         self._last_state = self._state
@@ -707,20 +712,21 @@ class AlarmoAreaEntity(AlarmoBaseEntity):
 
         _LOGGER.debug(
             "entity {} was updated from {} to {}".format(
-                self.entity_id, _last_state.state, state
+                self.entity_id, self._last_state, state
             )
         )
 
         if self._timer:
             self._timer()
 
-        if self.state.state not in [STATE_ALARM_ARMING, STATE_ALARM_PENDING]:
+        if self.state not in [STATE_ALARM_ARMING, STATE_ALARM_PENDING]:
             self.delay = None
 
         if state in const.ARM_MODES:
             self._arm_mode = state
         elif (
-            self._last_state.state == STATE_ALARM_DISARMED
+            self._last_state
+            and self._last_state.state == STATE_ALARM_DISARMED
             and state == STATE_ALARM_TRIGGERED
         ):
             self._arm_mode = None
@@ -729,8 +735,8 @@ class AlarmoAreaEntity(AlarmoBaseEntity):
             self.hass,
             "alarmo_state_updated",
             self.area_id,
-            this._last_state,
-            this._state,
+            self._last_state,
+            self._state,
         )
 
         self.async_write_ha_state()
@@ -1157,7 +1163,10 @@ class AlarmoMasterEntity(AlarmoBaseEntity):
         # state changes
         old_state = self._state
 
-        self._state = state
+        self._state = State(
+            entity_id=self.entity_id,
+            state=state,
+        )
         _LOGGER.debug("entity {} was updated to {}".format(self.entity_id, state))
         async_dispatcher_send(self.hass, "alarmo_state_updated", None, old_state, state)
 
