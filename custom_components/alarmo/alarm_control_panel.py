@@ -8,6 +8,8 @@ import operator
 from homeassistant.core import (
     HomeAssistant,
     callback,
+    State,
+    Context,
 )
 from homeassistant.helpers.event import (
     async_track_point_in_time,
@@ -57,7 +59,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 
 
 async def async_setup_entry(hass, config_entry, async_add_devices):
-    """Set up the Alarmo entities. """
+    """Set up the Alarmo entities."""
 
     @callback
     def async_add_alarm_entity(config: dict):
@@ -110,7 +112,8 @@ class AlarmoBaseEntity(AlarmControlPanelEntity, RestoreEntity):
         """Initialize the alarm_control_panel entity."""
         self.entity_id = entity_id
         self._name = name
-        self._state = None
+        self._last_state: State | None = None
+        self._state: State | None = None
         self.hass = hass
         self._config = {}
         self._arm_mode = None
@@ -127,7 +130,9 @@ class AlarmoBaseEntity(AlarmControlPanelEntity, RestoreEntity):
     def device_info(self) -> dict:
         """Return info for device registry."""
         return {
-            "identifiers": {(const.DOMAIN, self.hass.data[const.DOMAIN]["coordinator"].id)},
+            "identifiers": {
+                (const.DOMAIN, self.hass.data[const.DOMAIN]["coordinator"].id)
+            },
             "name": const.NAME,
             "model": const.NAME,
             "sw_version": const.VERSION,
@@ -158,17 +163,14 @@ class AlarmoBaseEntity(AlarmControlPanelEntity, RestoreEntity):
     def code_format(self):
         """Return whether code consists of digits or characters."""
 
-        if (
-            self._state == STATE_ALARM_DISARMED and
-            self.code_arm_required
-        ):
+        if self._state.state == STATE_ALARM_DISARMED and self.code_arm_required:
             return self._config[ATTR_CODE_FORMAT]
 
         elif (
-            self._state != STATE_ALARM_DISARMED and
-            self._config and
-            const.ATTR_CODE_DISARM_REQUIRED in self._config and
-            self._config[const.ATTR_CODE_DISARM_REQUIRED]
+            self._state.state != STATE_ALARM_DISARMED
+            and self._config
+            and const.ATTR_CODE_DISARM_REQUIRED in self._config
+            and self._config[const.ATTR_CODE_DISARM_REQUIRED]
         ):
             return self._config[ATTR_CODE_FORMAT]
 
@@ -195,7 +197,7 @@ class AlarmoBaseEntity(AlarmControlPanelEntity, RestoreEntity):
         """Whether the code is required for arm actions."""
         if not self._config or ATTR_CODE_ARM_REQUIRED not in self._config:
             return True  # assume code is needed (conservative approach)
-        elif self._state != STATE_ALARM_DISARMED:
+        elif self._state.state != STATE_ALARM_DISARMED:
             return self._config[const.ATTR_CODE_MODE_CHANGE_REQUIRED]
         else:
             return self._config[ATTR_CODE_ARM_REQUIRED]
@@ -203,7 +205,7 @@ class AlarmoBaseEntity(AlarmControlPanelEntity, RestoreEntity):
     @property
     def arm_mode(self):
         """Return the arm mode."""
-        return self._arm_mode if self._state != STATE_ALARM_DISARMED else None
+        return self._arm_mode if self._state.state != STATE_ALARM_DISARMED else None
 
     @property
     def open_sensors(self):
@@ -247,7 +249,9 @@ class AlarmoBaseEntity(AlarmControlPanelEntity, RestoreEntity):
         """Set delay."""
         if type(value) is int:
             self._delay = value
-            self.expiration = (dt_util.utcnow() + datetime.timedelta(seconds=value)).replace(microsecond=0)
+            self.expiration = (
+                dt_util.utcnow() + datetime.timedelta(seconds=value)
+            ).replace(microsecond=0)
         else:
             self._delay = None
             self.expiration = None
@@ -259,16 +263,24 @@ class AlarmoBaseEntity(AlarmControlPanelEntity, RestoreEntity):
         if not self._ready_to_arm_modes:
             return None
         else:
-            return list(map(lambda e: const.STATE_TO_ARM_MODE[e], self._ready_to_arm_modes))
+            return list(
+                map(lambda e: const.STATE_TO_ARM_MODE[e], self._ready_to_arm_modes)
+            )
 
     @ready_to_arm_modes.setter
     def ready_to_arm_modes(self, value):
         """Set arm modes which are ready for arming (no blocking sensors)."""
         if value == self._ready_to_arm_modes:
             return
-        _LOGGER.debug("ready_to_arm_modes updated to {}".format(", ".join(value).replace("armed_","")))
+        _LOGGER.debug(
+            "ready_to_arm_modes updated to {}".format(
+                ", ".join(value).replace("armed_", "")
+            )
+        )
         self._ready_to_arm_modes = value
-        async_dispatcher_send(self.hass, "alarmo_state_updated", self.area_id, None, None)
+        async_dispatcher_send(
+            self.hass, "alarmo_state_updated", self.area_id, None, None
+        )
         self.async_write_ha_state()
 
     @property
@@ -286,20 +298,23 @@ class AlarmoBaseEntity(AlarmControlPanelEntity, RestoreEntity):
     def _validate_code(self, code, to_state):
         """Validate given code."""
 
-        if to_state == STATE_ALARM_DISARMED and not self._config[const.ATTR_CODE_DISARM_REQUIRED]:
-            self._changed_by = None
-            return (True, None)
-        elif (
-            to_state != STATE_ALARM_DISARMED and
-            self._state == STATE_ALARM_DISARMED and 
-            not self._config[ATTR_CODE_ARM_REQUIRED]
+        if (
+            to_state == STATE_ALARM_DISARMED
+            and not self._config[const.ATTR_CODE_DISARM_REQUIRED]
         ):
             self._changed_by = None
             return (True, None)
         elif (
-            to_state != STATE_ALARM_DISARMED and
-            self._state != STATE_ALARM_DISARMED and 
-            not self._config[const.ATTR_CODE_MODE_CHANGE_REQUIRED]
+            to_state != STATE_ALARM_DISARMED
+            and self._state.state == STATE_ALARM_DISARMED
+            and not self._config[ATTR_CODE_ARM_REQUIRED]
+        ):
+            self._changed_by = None
+            return (True, None)
+        elif (
+            to_state != STATE_ALARM_DISARMED
+            and self._state.state != STATE_ALARM_DISARMED
+            and not self._config[const.ATTR_CODE_MODE_CHANGE_REQUIRED]
         ):
             self._changed_by = None
             return (True, None)
@@ -310,22 +325,32 @@ class AlarmoBaseEntity(AlarmControlPanelEntity, RestoreEntity):
         if not res:
             # wrong code was entered
             return (False, const.EVENT_INVALID_CODE_PROVIDED)
-        elif (
-            res[const.ATTR_AREA_LIMIT] and
-            not
-            all(area in res[const.ATTR_AREA_LIMIT]
-                for area in ([self.area_id] if self.area_id else list(self.hass.data[const.DOMAIN]["areas"].keys())))
+        elif res[const.ATTR_AREA_LIMIT] and not all(
+            area in res[const.ATTR_AREA_LIMIT]
+            for area in (
+                [self.area_id]
+                if self.area_id
+                else list(self.hass.data[const.DOMAIN]["areas"].keys())
+            )
         ):
             # user is not allowed to operate this area
-            _LOGGER.debug("User {} has no permission to arm/disarm this area.".format(res[ATTR_NAME]))
+            _LOGGER.debug(
+                "User {} has no permission to arm/disarm this area.".format(
+                    res[ATTR_NAME]
+                )
+            )
             return (False, const.EVENT_INVALID_CODE_PROVIDED)
         elif to_state == STATE_ALARM_DISARMED and not res["can_disarm"]:
             # user is not allowed to disarm the alarm
-            _LOGGER.debug("User {} has no permission to disarm the alarm.".format(res[ATTR_NAME]))
+            _LOGGER.debug(
+                "User {} has no permission to disarm the alarm.".format(res[ATTR_NAME])
+            )
             return (False, const.EVENT_INVALID_CODE_PROVIDED)
         elif to_state in const.ARM_MODES and not res["can_arm"]:
             # user is not allowed to arm the alarm
-            _LOGGER.debug("User {} has no permission to arm the alarm.".format(res[ATTR_NAME]))
+            _LOGGER.debug(
+                "User {} has no permission to arm the alarm.".format(res[ATTR_NAME])
+            )
             return (False, const.EVENT_INVALID_CODE_PROVIDED)
         else:
             self._changed_by = res[ATTR_NAME]
@@ -335,10 +360,7 @@ class AlarmoBaseEntity(AlarmControlPanelEntity, RestoreEntity):
         """handle external disarm request from alarmo.disarm service"""
         _LOGGER.debug("Service alarmo.disarm was called")
 
-        await self.async_alarm_disarm(
-            code=code,
-            context_id=context_id
-        )
+        await self.async_alarm_disarm(code=code, context_id=context_id)
 
     async def async_alarm_disarm(self, **kwargs):
         """Send disarm command."""
@@ -347,28 +369,41 @@ class AlarmoBaseEntity(AlarmControlPanelEntity, RestoreEntity):
         skip_code = kwargs.get("skip_code", False)
         context_id = kwargs.get("context_id", None)
 
-        if self._state == STATE_ALARM_DISARMED or not self._config:
+        if self._state.state == STATE_ALARM_DISARMED or not self._config:
             if not self._config:
-                _LOGGER.warning("Cannot process disarm command, alarm is not initialized yet.")
+                _LOGGER.warning(
+                    "Cannot process disarm command, alarm is not initialized yet."
+                )
             else:
-                _LOGGER.warning("Cannot go to state {} from state {}.".format(STATE_ALARM_DISARMED, self._state))
+                _LOGGER.warning(
+                    "Cannot go to state {} from state {}.".format(
+                        STATE_ALARM_DISARMED, self._state.state
+                    )
+                )
             async_dispatcher_send(
-                self.hass, "alarmo_event",
+                self.hass,
+                "alarmo_event",
                 const.EVENT_COMMAND_NOT_ALLOWED,
                 self.area_id,
                 {
                     "state": self._state,
                     "command": const.COMMAND_DISARM,
-                    const.ATTR_CONTEXT_ID: context_id
-                }
+                    const.ATTR_CONTEXT_ID: context_id,
+                },
             )
             return
         (res, info) = self._validate_code(code, STATE_ALARM_DISARMED)
         if not res and not skip_code:
-            async_dispatcher_send(self.hass, "alarmo_event", info, self.area_id, {
-                const.ATTR_CONTEXT_ID: context_id,
-                "command": const.COMMAND_DISARM,
-            })
+            async_dispatcher_send(
+                self.hass,
+                "alarmo_event",
+                info,
+                self.area_id,
+                {
+                    const.ATTR_CONTEXT_ID: context_id,
+                    "command": const.COMMAND_DISARM,
+                },
+            )
             _LOGGER.warning("Wrong code provided.")
             return
         else:
@@ -376,16 +411,24 @@ class AlarmoBaseEntity(AlarmControlPanelEntity, RestoreEntity):
             self.bypassed_sensors = None
             await self.async_update_state(STATE_ALARM_DISARMED)
             if self.changed_by:
-                _LOGGER.info("Alarm '{}' is disarmed by {}.".format(self.name, self.changed_by))
+                _LOGGER.info(
+                    "Alarm '{}' is disarmed by {}.".format(self.name, self.changed_by)
+                )
             else:
                 _LOGGER.info("Alarm '{}' is disarmed.".format(self.name))
 
-            async_dispatcher_send(self.hass, "alarmo_event", const.EVENT_DISARM, self.area_id, {
-                const.ATTR_CONTEXT_ID: context_id
-            })
+            async_dispatcher_send(
+                self.hass,
+                "alarmo_event",
+                const.EVENT_DISARM,
+                self.area_id,
+                {const.ATTR_CONTEXT_ID: context_id},
+            )
             return True
 
-    async def async_service_arm_handler(self, code, mode, skip_delay, force, context_id=None):
+    async def async_service_arm_handler(
+        self, code, mode, skip_delay, force, context_id=None
+    ):
         """handle external arm request from alarmo.arm service"""
         _LOGGER.debug("Service alarmo.arm was called")
 
@@ -397,7 +440,7 @@ class AlarmoBaseEntity(AlarmControlPanelEntity, RestoreEntity):
             code=code,
             skip_delay=skip_delay,
             bypass_open_sensors=force,
-            context_id=context_id
+            context_id=context_id,
         )
 
     async def async_handle_arm_request(self, arm_mode, **kwargs):
@@ -409,38 +452,58 @@ class AlarmoBaseEntity(AlarmControlPanelEntity, RestoreEntity):
         context_id = kwargs.get("context_id", None)
 
         if (
-            not (const.MODES_TO_SUPPORTED_FEATURES[arm_mode] & self.supported_features) or
-            (self._state != STATE_ALARM_DISARMED and self._state not in const.ARM_MODES) or
-            not self._config
+            not (const.MODES_TO_SUPPORTED_FEATURES[arm_mode] & self.supported_features)
+            or (
+                self._state.state != STATE_ALARM_DISARMED
+                and self._state.state not in const.ARM_MODES
+            )
+            or not self._config
         ):
             if not self._config or not self._state:
-                _LOGGER.warning("Cannot process arm command, alarm is not initialized yet.")
-            elif not (const.MODES_TO_SUPPORTED_FEATURES[arm_mode] & self.supported_features):
+                _LOGGER.warning(
+                    "Cannot process arm command, alarm is not initialized yet."
+                )
+            elif not (
+                const.MODES_TO_SUPPORTED_FEATURES[arm_mode] & self.supported_features
+            ):
                 _LOGGER.warning("Mode {} is not supported, ignoring.".format(arm_mode))
             else:
-                _LOGGER.warning("Cannot go to state {} from state {}.".format(arm_mode, self._state))
+                _LOGGER.warning(
+                    "Cannot go to state {} from state {}.".format(
+                        arm_mode, self._state.state
+                    )
+                )
             async_dispatcher_send(
-                self.hass, "alarmo_event",
+                self.hass,
+                "alarmo_event",
                 const.EVENT_COMMAND_NOT_ALLOWED,
                 self.area_id,
                 {
                     "state": self._state,
                     "command": arm_mode.replace("armed", "arm"),
-                    const.ATTR_CONTEXT_ID: context_id
-                }
+                    const.ATTR_CONTEXT_ID: context_id,
+                },
             )
             return False
-        elif self._state in const.ARM_MODES and self._arm_mode == arm_mode:
-            _LOGGER.debug("Alarm is already set to {}, ignoring command.".format(arm_mode))
+        elif self._state.state in const.ARM_MODES and self._arm_mode == arm_mode:
+            _LOGGER.debug(
+                "Alarm is already set to {}, ignoring command.".format(arm_mode)
+            )
             return False
 
         if not skip_code:
             (res, info) = self._validate_code(code, arm_mode)
             if not res:
-                async_dispatcher_send(self.hass, "alarmo_event", info, self.area_id, {
-                    "command": arm_mode.replace("armed", "arm"),
-                    const.ATTR_CONTEXT_ID: context_id,
-                })
+                async_dispatcher_send(
+                    self.hass,
+                    "alarmo_event",
+                    info,
+                    self.area_id,
+                    {
+                        "command": arm_mode.replace("armed", "arm"),
+                        const.ATTR_CONTEXT_ID: context_id,
+                    },
+                )
                 _LOGGER.warning("Wrong code provided.")
                 if self.open_sensors:
                     self.open_sensors = None
@@ -451,9 +514,9 @@ class AlarmoBaseEntity(AlarmControlPanelEntity, RestoreEntity):
         else:
             self._changed_by = None
 
-        if self._state in const.ARM_MODES:
+        if self._state.state in const.ARM_MODES:
             # we are switching between arm modes
-            self._revert_state = self._state
+            self._revert_state = self._state.state
         else:
             self._revert_state = STATE_ALARM_DISARMED
             self.open_sensors = None
@@ -463,33 +526,73 @@ class AlarmoBaseEntity(AlarmControlPanelEntity, RestoreEntity):
             arm_mode,
             skip_delay=skip_delay,
             bypass_open_sensors=bypass_open_sensors,
-            context_id=context_id
+            context_id=context_id,
         )
 
-    async def async_alarm_arm_away(self, code=None, skip_code=False, bypass_open_sensors=False, skip_delay=False):
+    async def async_alarm_arm_away(
+        self, code=None, skip_code=False, bypass_open_sensors=False, skip_delay=False
+    ):
         """Send arm away command."""
         _LOGGER.debug("alarm_arm_away")
-        await self.async_handle_arm_request(STATE_ALARM_ARMED_AWAY, code=code, skip_code=skip_code, bypass_open_sensors=bypass_open_sensors, skip_delay=skip_delay)
+        await self.async_handle_arm_request(
+            STATE_ALARM_ARMED_AWAY,
+            code=code,
+            skip_code=skip_code,
+            bypass_open_sensors=bypass_open_sensors,
+            skip_delay=skip_delay,
+        )
 
-    async def async_alarm_arm_home(self, code=None, skip_code=False, bypass_open_sensors=False, skip_delay=False):
+    async def async_alarm_arm_home(
+        self, code=None, skip_code=False, bypass_open_sensors=False, skip_delay=False
+    ):
         """Send arm home command."""
         _LOGGER.debug("alarm_arm_home")
-        await self.async_handle_arm_request(STATE_ALARM_ARMED_HOME, code=code, skip_code=skip_code, bypass_open_sensors=bypass_open_sensors, skip_delay=skip_delay)
+        await self.async_handle_arm_request(
+            STATE_ALARM_ARMED_HOME,
+            code=code,
+            skip_code=skip_code,
+            bypass_open_sensors=bypass_open_sensors,
+            skip_delay=skip_delay,
+        )
 
-    async def async_alarm_arm_night(self, code=None, skip_code=False, bypass_open_sensors=False, skip_delay=False):
+    async def async_alarm_arm_night(
+        self, code=None, skip_code=False, bypass_open_sensors=False, skip_delay=False
+    ):
         """Send arm night command."""
         _LOGGER.debug("alarm_arm_night")
-        await self.async_handle_arm_request(STATE_ALARM_ARMED_NIGHT, code=code, skip_code=skip_code, bypass_open_sensors=bypass_open_sensors, skip_delay=skip_delay)
+        await self.async_handle_arm_request(
+            STATE_ALARM_ARMED_NIGHT,
+            code=code,
+            skip_code=skip_code,
+            bypass_open_sensors=bypass_open_sensors,
+            skip_delay=skip_delay,
+        )
 
-    async def async_alarm_arm_custom_bypass(self, code=None, skip_code=False, bypass_open_sensors=False, skip_delay=False):
+    async def async_alarm_arm_custom_bypass(
+        self, code=None, skip_code=False, bypass_open_sensors=False, skip_delay=False
+    ):
         """Send arm custom_bypass command."""
         _LOGGER.debug("alarm_arm_custom_bypass")
-        await self.async_handle_arm_request(STATE_ALARM_ARMED_CUSTOM_BYPASS, code=code, skip_code=skip_code, bypass_open_sensors=bypass_open_sensors, skip_delay=skip_delay)
+        await self.async_handle_arm_request(
+            STATE_ALARM_ARMED_CUSTOM_BYPASS,
+            code=code,
+            skip_code=skip_code,
+            bypass_open_sensors=bypass_open_sensors,
+            skip_delay=skip_delay,
+        )
 
-    async def async_alarm_arm_vacation(self, code=None, skip_code=False, bypass_open_sensors=False, skip_delay=False):
+    async def async_alarm_arm_vacation(
+        self, code=None, skip_code=False, bypass_open_sensors=False, skip_delay=False
+    ):
         """Send arm vacation command."""
         _LOGGER.debug("alarm_arm_vacation")
-        await self.async_handle_arm_request(STATE_ALARM_ARMED_VACATION, code=code, skip_code=skip_code, bypass_open_sensors=bypass_open_sensors, skip_delay=skip_delay)
+        await self.async_handle_arm_request(
+            STATE_ALARM_ARMED_VACATION,
+            code=code,
+            skip_code=skip_code,
+            bypass_open_sensors=bypass_open_sensors,
+            skip_delay=skip_delay,
+        )
 
     async def async_alarm_trigger(self, code=None) -> None:
         """Send alarm trigger command."""
@@ -501,19 +604,19 @@ class AlarmoBaseEntity(AlarmControlPanelEntity, RestoreEntity):
         _LOGGER.debug("{} is added to hass".format(self.entity_id))
         await super().async_added_to_hass()
 
-        state = await self.async_get_last_state()
+        self.last_state = await self.async_get_last_state()
 
         # restore previous state
-        if state:
+        if self.last_state:
             # restore attributes
-            if "arm_mode" in state.attributes:
-                self._arm_mode = state.attributes["arm_mode"]
-            if "changed_by" in state.attributes:
-                self._changed_by = state.attributes["changed_by"]
-            if "open_sensors" in state.attributes:
-                self.open_sensors = state.attributes["open_sensors"]
-            if "bypassed_sensors" in state.attributes:
-                self._bypassed_sensors = state.attributes["bypassed_sensors"]
+            if "arm_mode" in last_state.attributes:
+                self._arm_mode = last_state.attributes["arm_mode"]
+            if "changed_by" in last_state.attributes:
+                self._changed_by = last_state.attributes["changed_by"]
+            if "open_sensors" in last_state.attributes:
+                self.open_sensors = last_state.attributes["open_sensors"]
+            if "bypassed_sensors" in last_state.attributes:
+                self._bypassed_sensors = last_state.attributes["bypassed_sensors"]
 
     async def async_will_remove_from_hass(self):
         await super().async_will_remove_from_hass()
@@ -523,7 +626,9 @@ class AlarmoBaseEntity(AlarmControlPanelEntity, RestoreEntity):
 class AlarmoAreaEntity(AlarmoBaseEntity):
     """Defines a base alarm_control_panel entity."""
 
-    def __init__(self, hass: HomeAssistant, name: str, entity_id: str, area_id: str) -> None:
+    def __init__(
+        self, hass: HomeAssistant, name: str, entity_id: str, area_id: str
+    ) -> None:
         """Initialize the alarm_control_panel entity."""
         super().__init__(hass, name, entity_id)
 
@@ -540,9 +645,11 @@ class AlarmoAreaEntity(AlarmoBaseEntity):
             return 0
         else:
             supported_features = AlarmControlPanelEntityFeature.TRIGGER
-            for (mode, mode_config) in self._config[const.ATTR_MODES].items():
+            for mode, mode_config in self._config[const.ATTR_MODES].items():
                 if mode_config[const.ATTR_ENABLED]:
-                    supported_features = supported_features | const.MODES_TO_SUPPORTED_FEATURES[mode]
+                    supported_features = (
+                        supported_features | const.MODES_TO_SUPPORTED_FEATURES[mode]
+                    )
 
             return supported_features
 
@@ -560,14 +667,18 @@ class AlarmoAreaEntity(AlarmoBaseEntity):
             self.async_write_ha_state()
 
         self.async_on_remove(
-            async_dispatcher_connect(self.hass, "alarmo_config_updated", async_update_config)
+            async_dispatcher_connect(
+                self.hass, "alarmo_config_updated", async_update_config
+            )
         )
 
         # restore previous state
         state = await self.async_get_last_state()
         if state:
             initial_state = state.state
-            _LOGGER.debug("Initial state for {} is {}".format(self.entity_id, initial_state))
+            _LOGGER.debug(
+                "Initial state for {} is {}".format(self.entity_id, initial_state)
+            )
             if initial_state == STATE_ALARM_ARMING:
                 await self.async_arm(self.arm_mode)
             elif initial_state == STATE_ALARM_PENDING:
@@ -581,29 +692,46 @@ class AlarmoAreaEntity(AlarmoBaseEntity):
 
         self.async_write_ha_state()
 
-    async def async_update_state(self, state: str = None):
+    async def async_update_state(self, state: str = None, context: Context = None):
         """update the state or refresh state attributes"""
 
-        if state == self._state:
+        if state == self._state.state:
             return
 
-        old_state = self._state
-        self._state = state
+        self._last_state = self._state
+        self._state = State(
+            entity_id=self.entity_id,
+            state=state,
+            context=context,
+        )
 
-        _LOGGER.debug("entity {} was updated from {} to {}".format(self.entity_id, old_state, state))
+        _LOGGER.debug(
+            "entity {} was updated from {} to {}".format(
+                self.entity_id, _last_state.state, state
+            )
+        )
 
         if self._timer:
             self._timer()
 
-        if self.state not in [STATE_ALARM_ARMING, STATE_ALARM_PENDING]:
+        if self.state.state not in [STATE_ALARM_ARMING, STATE_ALARM_PENDING]:
             self.delay = None
 
         if state in const.ARM_MODES:
             self._arm_mode = state
-        elif old_state == STATE_ALARM_DISARMED and state == STATE_ALARM_TRIGGERED:
+        elif (
+            self._last_state.state == STATE_ALARM_DISARMED
+            and state == STATE_ALARM_TRIGGERED
+        ):
             self._arm_mode = None
 
-        async_dispatcher_send(self.hass, "alarmo_state_updated", self.area_id, old_state, state)
+        async_dispatcher_send(
+            self.hass,
+            "alarmo_state_updated",
+            self.area_id,
+            this._last_state,
+            this._state,
+        )
 
         self.async_write_ha_state()
 
@@ -612,7 +740,7 @@ class AlarmoAreaEntity(AlarmoBaseEntity):
         self._open_sensors = open_sensors
         command = self._arm_mode.replace("armed", "arm")
 
-        if self._state != self._revert_state and self._revert_state:
+        if self._state.state != self._revert_state and self._revert_state:
             await self.async_update_state(self._revert_state)
         else:
             # when disarmed, only update the attributes
@@ -630,8 +758,8 @@ class AlarmoAreaEntity(AlarmoBaseEntity):
             {
                 "open_sensors": open_sensors,
                 "command": command,
-                const.ATTR_CONTEXT_ID: context_id
-            }
+                const.ATTR_CONTEXT_ID: context_id,
+            },
         )
 
     async def async_arm(self, arm_mode, **kwargs):
@@ -646,16 +774,20 @@ class AlarmoAreaEntity(AlarmoBaseEntity):
         if skip_delay or not exit_delay:
             # immediate arm event
 
-            (open_sensors, bypassed_sensors) = self.hass.data[const.DOMAIN]["sensor_handler"].validate_arming_event(
+            (open_sensors, bypassed_sensors) = self.hass.data[const.DOMAIN][
+                "sensor_handler"
+            ].validate_arming_event(
                 area_id=self.area_id,
                 target_state=arm_mode,
-                bypass_open_sensors=bypass_open_sensors
+                bypass_open_sensors=bypass_open_sensors,
             )
 
             if open_sensors:
                 # there where errors -> abort the arm
                 _LOGGER.info(
-                    "Cannot transition from state {} to state {}, there are open sensors".format(self._state, arm_mode)
+                    "Cannot transition from state {} to state {}, there are open sensors".format(
+                        self._state.state, arm_mode
+                    )
                 )
                 await self.async_arm_failure(open_sensors, context_id=context_id)
                 return False
@@ -665,10 +797,16 @@ class AlarmoAreaEntity(AlarmoBaseEntity):
                     self.bypassed_sensors = bypassed_sensors
                 self.open_sensors = None
                 if self.changed_by:
-                    _LOGGER.info("Alarm '{}' is armed ({}) by {}.".format(self.name, arm_mode, self.changed_by))
+                    _LOGGER.info(
+                        "Alarm '{}' is armed ({}) by {}.".format(
+                            self.name, arm_mode, self.changed_by
+                        )
+                    )
                 else:
-                    _LOGGER.info("Alarm '{}' is armed ({}).".format(self.name, arm_mode))
-                if self._state and self._state != STATE_ALARM_ARMING:
+                    _LOGGER.info(
+                        "Alarm '{}' is armed ({}).".format(self.name, arm_mode)
+                    )
+                if self._state and self._state.state != STATE_ALARM_ARMING:
                     async_dispatcher_send(
                         self.hass,
                         "alarmo_event",
@@ -677,15 +815,16 @@ class AlarmoAreaEntity(AlarmoBaseEntity):
                         {
                             "arm_mode": arm_mode,
                             "delay": 0,
-                            const.ATTR_CONTEXT_ID: context_id
-                        }
+                            const.ATTR_CONTEXT_ID: context_id,
+                        },
                     )
                 await self.async_update_state(arm_mode)
                 return True
 
         else:  # normal arm event (from disarmed via arming)
-
-            (open_sensors, _bypassed_sensors) = self.hass.data[const.DOMAIN]["sensor_handler"].validate_arming_event(
+            (open_sensors, _bypassed_sensors) = self.hass.data[const.DOMAIN][
+                "sensor_handler"
+            ].validate_arming_event(
                 area_id=self.area_id,
                 target_state=arm_mode,
                 use_delay=True,
@@ -699,7 +838,9 @@ class AlarmoAreaEntity(AlarmoBaseEntity):
                 return False
             else:
                 # proceed the arm
-                _LOGGER.info("Alarm is now arming. Waiting for {} seconds.".format(exit_delay))
+                _LOGGER.info(
+                    "Alarm is now arming. Waiting for {} seconds.".format(exit_delay)
+                )
                 async_dispatcher_send(
                     self.hass,
                     "alarmo_event",
@@ -708,8 +849,8 @@ class AlarmoAreaEntity(AlarmoBaseEntity):
                     {
                         "arm_mode": arm_mode,
                         "delay": exit_delay,
-                        const.ATTR_CONTEXT_ID: context_id
-                    }
+                        const.ATTR_CONTEXT_ID: context_id,
+                    },
                 )
                 self.delay = exit_delay
                 self.open_sensors = None
@@ -722,24 +863,37 @@ class AlarmoAreaEntity(AlarmoBaseEntity):
                     await self.async_arm(
                         self.arm_mode,
                         bypass_open_sensors=bypass_open_sensors,
-                        skip_delay=True
+                        skip_delay=True,
                     )
 
                 self.async_set_timer(exit_delay, async_leave_timer_finished)
                 return True
 
-    async def async_trigger(self, skip_delay: bool = False, open_sensors: dict = None):
+    async def async_trigger(
+        self,
+        skip_delay: bool = False,
+        open_sensors: dict = None,
+        context: Context = None,
+    ):
         """Trigger request. Will only be called the first time a sensor trips."""
 
-        if self._state == STATE_ALARM_PENDING or skip_delay or not self._arm_mode:
+        if self._state.state == STATE_ALARM_PENDING or skip_delay or not self._arm_mode:
             entry_delay = 0
         else:
             entry_delay = self._config[const.ATTR_MODES][self._arm_mode]["entry_time"]
-        trigger_time = self._config[const.ATTR_MODES][self._arm_mode]["trigger_time"] if self._arm_mode else 0
+        trigger_time = (
+            self._config[const.ATTR_MODES][self._arm_mode]["trigger_time"]
+            if self._arm_mode
+            else 0
+        )
 
         if self._state and (
-            self._state != STATE_ALARM_PENDING or
-            (self._state == STATE_ALARM_PENDING and skip_delay and open_sensors != self.open_sensors)
+            self._state.state != STATE_ALARM_PENDING
+            or (
+                self._state.state == STATE_ALARM_PENDING
+                and skip_delay
+                and open_sensors != self.open_sensors
+            )
         ):
             # send event on first trigger or consecutive trigger in case it has no entry delay
             async_dispatcher_send(
@@ -748,9 +902,11 @@ class AlarmoAreaEntity(AlarmoBaseEntity):
                 const.EVENT_TRIGGER,
                 self.area_id,
                 {
-                    "open_sensors": open_sensors if open_sensors else self._open_sensors,
+                    "open_sensors": open_sensors
+                    if open_sensors
+                    else self._open_sensors,
                     "delay": entry_delay,
-                }
+                },
             )
 
         if open_sensors:
@@ -758,7 +914,7 @@ class AlarmoAreaEntity(AlarmoBaseEntity):
 
         if not entry_delay:
             # countdown finished or immediate trigger event
-            await self.async_update_state(STATE_ALARM_TRIGGERED)
+            await self.async_update_state(STATE_ALARM_TRIGGERED, context=context)
 
             if trigger_time:
                 # there is a max. trigger time configured
@@ -768,18 +924,23 @@ class AlarmoAreaEntity(AlarmoBaseEntity):
                     """Update state at a scheduled point in time."""
                     _LOGGER.debug("async_trigger_timer_finished")
                     self._changed_by = None
-                    if self._config[const.ATTR_DISARM_AFTER_TRIGGER] or not self.arm_mode:
+                    if (
+                        self._config[const.ATTR_DISARM_AFTER_TRIGGER]
+                        or not self.arm_mode
+                    ):
                         self.bypassed_sensors = None
                         await self.async_update_state(STATE_ALARM_DISARMED)
                     else:
                         self.open_sensors = None
-                        await self.async_arm(self.arm_mode, bypass_open_sensors=False, skip_delay=True)
+                        await self.async_arm(
+                            self.arm_mode, bypass_open_sensors=False, skip_delay=True
+                        )
 
                     async_dispatcher_send(
                         self.hass,
                         "alarmo_event",
                         const.EVENT_TRIGGER_TIME_EXPIRED,
-                        self.area_id
+                        self.area_id,
                     )
 
                 self.async_set_timer(trigger_time, async_trigger_timer_finished)
@@ -798,7 +959,9 @@ class AlarmoAreaEntity(AlarmoBaseEntity):
                 await self.async_trigger()
 
             self.async_set_timer(entry_delay, async_entry_timer_finished)
-            _LOGGER.info("Alarm will be triggered after {} seconds.".format(entry_delay))
+            _LOGGER.info(
+                "Alarm will be triggered after {} seconds.".format(entry_delay)
+            )
 
     def async_set_timer(self, delay, cb_func):
         if self._timer:
@@ -808,9 +971,7 @@ class AlarmoAreaEntity(AlarmoBaseEntity):
         if not isinstance(delay, datetime.timedelta):
             delay = datetime.timedelta(seconds=delay)
 
-        self._timer = async_track_point_in_time(
-            self.hass, cb_func, now + delay
-        )
+        self._timer = async_track_point_in_time(self.hass, cb_func, now + delay)
 
 
 class AlarmoMasterEntity(AlarmoBaseEntity):
@@ -851,73 +1012,78 @@ class AlarmoMasterEntity(AlarmoBaseEntity):
             self.async_write_ha_state()
 
         self.async_on_remove(
-            async_dispatcher_connect(self.hass, "alarmo_config_updated", async_update_config)
+            async_dispatcher_connect(
+                self.hass, "alarmo_config_updated", async_update_config
+            )
         )
         await async_update_config()
 
         @callback
-        async def async_alarm_state_changed(area_id: str, old_state: str, new_state: str):
+        async def async_alarm_state_changed(
+            area_id: str, old_state: str, new_state: str
+        ):
             if not area_id:
                 return
             await self.async_update_state()
 
-        async_dispatcher_connect(self.hass, "alarmo_state_updated", async_alarm_state_changed)
+        async_dispatcher_connect(
+            self.hass, "alarmo_state_updated", async_alarm_state_changed
+        )
 
         @callback
         async def async_handle_event(event: str, area_id: str, args: dict = {}):
             if not area_id or event not in [
                 const.EVENT_FAILED_TO_ARM,
                 const.EVENT_TRIGGER,
-                const.EVENT_TRIGGER_TIME_EXPIRED
+                const.EVENT_TRIGGER_TIME_EXPIRED,
             ]:
                 return
             if event == const.EVENT_FAILED_TO_ARM and self._target_state is not None:
                 open_sensors = args["open_sensors"]
                 await self.async_arm_failure(open_sensors)
             if event == const.EVENT_TRIGGER and (
-                self._state not in [STATE_ALARM_TRIGGERED, STATE_ALARM_PENDING] or (
-                    self._state == STATE_ALARM_PENDING and
-                    self.delay and self.delay > args.get("delay", 0)
+                self._state.state not in [STATE_ALARM_TRIGGERED, STATE_ALARM_PENDING]
+                or (
+                    self._state.state == STATE_ALARM_PENDING
+                    and self.delay
+                    and self.delay > args.get("delay", 0)
                 )
             ):
                 # only pass initial trigger event or while trigger with shorter entry delay occurs during entry time
                 async_dispatcher_send(
-                    self.hass,
-                    "alarmo_event",
-                    const.EVENT_TRIGGER,
-                    self.area_id,
-                    args
+                    self.hass, "alarmo_event", const.EVENT_TRIGGER, self.area_id, args
                 )
             if event == const.EVENT_TRIGGER_TIME_EXPIRED:
-                if self.hass.data[const.DOMAIN]["areas"][area_id].state == STATE_ALARM_DISARMED:
+                if (
+                    self.hass.data[const.DOMAIN]["areas"][area_id].state
+                    == STATE_ALARM_DISARMED
+                ):
                     await self.async_alarm_disarm(skip_code=True)
 
         async_dispatcher_connect(self.hass, "alarmo_event", async_handle_event)
 
         state = await self.async_get_last_state()
         if state and state.state:
-            self._state = state.state
+            self._state = state
         else:
-            self._state = STATE_ALARM_DISARMED
+            self._state = State(
+                entity_id=self.entity_id,
+                state=STATE_ALARM_DISARMED,
+            )
         self.async_write_ha_state()
 
-    async def async_update_state(self, state: str = None):
+    async def async_update_state(self):
         """update the state or refresh state attributes"""
 
-        if state:
-            # do not allow updating the state directly
-            return
-
-        states = [
-            item.state
-            for item in self.hass.data[const.DOMAIN]["areas"].values()
-        ]
+        states = [item.state for item in self.hass.data[const.DOMAIN]["areas"].values()]
         state = None
         if STATE_ALARM_TRIGGERED in states:
             state = STATE_ALARM_TRIGGERED
         elif STATE_ALARM_PENDING in states:
             state = STATE_ALARM_PENDING
-        elif STATE_ALARM_ARMING in states and all(el in const.ARM_MODES or el == STATE_ALARM_ARMING for el in states):
+        elif STATE_ALARM_ARMING in states and all(
+            el in const.ARM_MODES or el == STATE_ALARM_ARMING for el in states
+        ):
             state = STATE_ALARM_ARMING
         elif all(el == STATE_ALARM_ARMED_AWAY for el in states):
             state = STATE_ALARM_ARMED_AWAY
@@ -933,8 +1099,7 @@ class AlarmoMasterEntity(AlarmoBaseEntity):
             state = STATE_ALARM_DISARMED
 
         arm_modes = [
-            item._arm_mode
-            for item in self.hass.data[const.DOMAIN]["areas"].values()
+            item._arm_mode for item in self.hass.data[const.DOMAIN]["areas"].values()
         ]
         arm_mode = arm_modes[0] if len(set(arm_modes)) == 1 else None
 
@@ -945,26 +1110,42 @@ class AlarmoMasterEntity(AlarmoBaseEntity):
         if state in [STATE_ALARM_ARMING, STATE_ALARM_PENDING]:
             # one or more areas went to arming/pending state, recalculate the delay time
 
-            area_filter = dict(filter(lambda el: el[1].state == state, self.hass.data[const.DOMAIN]["areas"].items()))
+            area_filter = dict(
+                filter(
+                    lambda el: el[1].state == state,
+                    self.hass.data[const.DOMAIN]["areas"].items(),
+                )
+            )
             delays = [el.delay for el in area_filter.values()]
 
             # use maximum of all areas when arming, minimum of all areas when pending
-            delay = max(delays) if state == STATE_ALARM_ARMING else min(delays) if len(delays) else None
+            delay = (
+                max(delays)
+                if state == STATE_ALARM_ARMING
+                else min(delays)
+                if len(delays)
+                else None
+            )
         else:
             delay = None
 
         # take open sensors by combining areas having same state
         open_sensors = {}
-        area_filter = dict(filter(lambda el: el[1].state == state, self.hass.data[const.DOMAIN]["areas"].items()))
+        area_filter = dict(
+            filter(
+                lambda el: el[1].state == state,
+                self.hass.data[const.DOMAIN]["areas"].items(),
+            )
+        )
         for item in area_filter.values():
             if item.open_sensors:
                 open_sensors.update(item.open_sensors)
 
         if (
-            arm_mode == self._arm_mode and
-            (state == self._state or not state) and
-            delay == self.delay and
-            open_sensors == self.open_sensors
+            arm_mode == self._arm_mode
+            and (state == self._state or not state)
+            and delay == self.delay
+            and open_sensors == self.open_sensors
         ):
             # do not update if state and properties remain unchanged
             return
@@ -973,13 +1154,12 @@ class AlarmoMasterEntity(AlarmoBaseEntity):
         self.delay = delay
         self.open_sensors = open_sensors
 
-        if state != self._state and state:
-            # state changes
-            old_state = self._state
+        # state changes
+        old_state = self._state
 
-            self._state = state
-            _LOGGER.debug("entity {} was updated from {} to {}".format(self.entity_id, old_state, state))
-            async_dispatcher_send(self.hass, "alarmo_state_updated", None, old_state, state)
+        self._state = state
+        _LOGGER.debug("entity {} was updated to {}".format(self.entity_id, state))
+        async_dispatcher_send(self.hass, "alarmo_state_updated", None, old_state, state)
 
         # take bypassed sensors by combining all areas
         bypassed_sensors = []
@@ -991,7 +1171,9 @@ class AlarmoMasterEntity(AlarmoBaseEntity):
         # calculate ready for arm modes
         modes_list = const.ARM_MODES
         for item in self.hass.data[const.DOMAIN]["areas"].values():
-            modes_list = list(filter(lambda x: x in item._ready_to_arm_modes, modes_list))
+            modes_list = list(
+                filter(lambda x: x in item._ready_to_arm_modes, modes_list)
+            )
         self._ready_to_arm_modes = modes_list
 
         self.async_write_ha_state()
@@ -1009,9 +1191,13 @@ class AlarmoMasterEntity(AlarmoBaseEntity):
                 if item.state != STATE_ALARM_DISARMED:
                     await item.async_alarm_disarm(code=code, skip_code=skip_code)
 
-            async_dispatcher_send(self.hass, "alarmo_event", const.EVENT_DISARM, self.area_id, {
-                const.ATTR_CONTEXT_ID: context_id
-            })
+            async_dispatcher_send(
+                self.hass,
+                "alarmo_event",
+                const.EVENT_DISARM,
+                self.area_id,
+                {const.ATTR_CONTEXT_ID: context_id},
+            )
 
     async def async_arm(self, arm_mode, **kwargs):
         """Arm the alarm or switch between arm modes."""
@@ -1022,11 +1208,13 @@ class AlarmoMasterEntity(AlarmoBaseEntity):
 
         open_sensors = {}
         for item in self.hass.data[const.DOMAIN]["areas"].values():
-            if (item.state in const.ARM_MODES and item.arm_mode != arm_mode) or item.state == STATE_ALARM_DISARMED:
+            if (
+                item.state in const.ARM_MODES and item.arm_mode != arm_mode
+            ) or item.state == STATE_ALARM_DISARMED:
                 res = await item.async_arm(
                     arm_mode,
                     skip_delay=skip_delay,
-                    bypass_open_sensors=bypass_open_sensors
+                    bypass_open_sensors=bypass_open_sensors,
                 )
                 if not res:
                     open_sensors.update(item.open_sensors)
@@ -1035,8 +1223,10 @@ class AlarmoMasterEntity(AlarmoBaseEntity):
             await self.async_arm_failure(open_sensors, context_id=context_id)
         else:
             delay = 0
-            area_config = self.hass.data[const.DOMAIN]["coordinator"].store.async_get_areas()
-            for (area_id, entity) in self.hass.data[const.DOMAIN]["areas"].items():
+            area_config = self.hass.data[const.DOMAIN][
+                "coordinator"
+            ].store.async_get_areas()
+            for area_id, entity in self.hass.data[const.DOMAIN]["areas"].items():
                 if entity.state == STATE_ALARM_ARMING:
                     t = area_config[area_id][const.ATTR_MODES][arm_mode]["exit_time"]
                     delay = t if t > delay else delay
@@ -1049,8 +1239,8 @@ class AlarmoMasterEntity(AlarmoBaseEntity):
                 {
                     "arm_mode": arm_mode,
                     "delay": delay,
-                    const.ATTR_CONTEXT_ID: context_id
-                }
+                    const.ATTR_CONTEXT_ID: context_id,
+                },
             )
 
     async def async_arm_failure(self, open_sensors: dict, context_id=None):
@@ -1072,8 +1262,8 @@ class AlarmoMasterEntity(AlarmoBaseEntity):
             {
                 "open_sensors": open_sensors,
                 "command": command,
-                const.ATTR_CONTEXT_ID: context_id
-            }
+                const.ATTR_CONTEXT_ID: context_id,
+            },
         )
         self.async_write_ha_state()
 
